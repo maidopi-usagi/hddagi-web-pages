@@ -25,7 +25,7 @@
     progress { width: 100%; height: 8px; accent-color: #64adfa }
     a { color: #a7cdff }
   </style>
-  <link rel="preload" href="index.js" as="script">
+  <link rel="preload" href="index-c35abaa1d36d44e7.js" as="script">
 </head>
 <body>
   <canvas id="canvas" tabindex="0" aria-label="Interactive HDDAGI scene"></canvas>
@@ -46,7 +46,7 @@
       <p><a href="scene-license.txt">Scene credits</a></p>
     </article>
   </div>
-  <script src="index.js"></script>
+  <script src="index-c35abaa1d36d44e7.js"></script>
   <script>
     const statusPanel = document.querySelector("#status");
     const message = document.querySelector("#message");
@@ -88,7 +88,7 @@
         const stack = error?.stack?.split("\n").slice(0, 12) ?? [];
         const bytes = wasmHeapBytes();
         const memory = bytes ? [heapMessage(bytes, "at failure")] : [];
-        startupLog.querySelector("pre").textContent = [...startupMessages, ...memory, ...stack].join("\n");
+        startupLog.querySelector("pre").textContent = [message.textContent, ...startupMessages, ...memory, ...stack].join("\n");
         startupLog.hidden = false;
       }
     }
@@ -314,13 +314,13 @@
       }
       message.textContent = "Downloading engine and scene…";
       engine = new Engine({
-        executable: "index",
+        executable: "index-c35abaa1d36d44e7",
         canvas,
         canvasResizePolicy: iosProfile ? 0 : 2,
         args,
         renderingDriver: "webgpu",
         preinitializedWebGPUDevice: device,
-        fileSizes: {"index.audio.position.worklet.js": 2968, "index.audio.worklet.js": 7298, "index.js": 256279, "index.pck": 3697560, "index.wasm": 26125449},
+        fileSizes: {"index-c35abaa1d36d44e7.pck": 3697560, "index-c35abaa1d36d44e7.js": 256279, "index-c35abaa1d36d44e7.wasm": 26125449},
         onPrint(...args) {
           const line = args.join(" ");
           rememberStartup(line);
