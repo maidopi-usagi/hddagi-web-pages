@@ -25,7 +25,7 @@
     progress { width: 100%; height: 8px; accent-color: #64adfa }
     a { color: #a7cdff }
   </style>
-  <link rel="preload" href="index-5e6acd2555d93f7b.js" as="script">
+  <link rel="preload" href="index-3f2e7e6461eadc71.js" as="script">
 </head>
 <body>
   <canvas id="canvas" tabindex="0" aria-label="Interactive HDDAGI scene"></canvas>
@@ -46,7 +46,7 @@
       <p><a href="scene-license.txt">Scene credits</a></p>
     </article>
   </div>
-  <script src="index-5e6acd2555d93f7b.js"></script>
+  <script src="index-3f2e7e6461eadc71.js"></script>
   <script>
     const statusPanel = document.querySelector("#status");
     const message = document.querySelector("#message");
@@ -345,13 +345,13 @@
       if (userArgs.length) args.push("--", ...userArgs);
       message.textContent = "Downloading engine and scene…";
       engine = new Engine({
-        executable: "index-5e6acd2555d93f7b",
+        executable: "index-3f2e7e6461eadc71",
         canvas,
         canvasResizePolicy: limitMemory ? 0 : 2,
         args,
         renderingDriver: "webgpu",
         preinitializedWebGPUDevice: device,
-        fileSizes: {"index-5e6acd2555d93f7b.pck": 3697864, "index-5e6acd2555d93f7b.js": 256279, "index-5e6acd2555d93f7b.wasm": 26125449},
+        fileSizes: {"index-3f2e7e6461eadc71.pck": 3697864, "index-3f2e7e6461eadc71.js": 256279, "index-3f2e7e6461eadc71.wasm": 26125519},
         onPrint(...args) {
           const line = args.join(" ");
           rememberStartup(line);
