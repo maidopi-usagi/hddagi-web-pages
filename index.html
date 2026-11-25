@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HDDAGI Screen Probes</title>
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #101720; color: #e6edf6; font: 15px system-ui, sans-serif }
+    #canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none }
+    #status { position: fixed; inset: 0; display: grid; place-items: safe center; overflow: auto; padding: 16px; background: #101720 }
+    #status[hidden] { display: none }
+    article { box-sizing: border-box; width: min(478px, 100%); padding: clamp(16px, 5vw, 28px); border: 1px solid #3b5064; border-radius: 16px; background: #17212c }
+    h1 { margin: 0 0 16px; font-size: 24px; font-weight: 650 }
+    p { line-height: 1.5; color: #b8c8dc }
+    #requirements { display: grid; gap: 8px; padding: 0; list-style: none }
+    #requirements[hidden] { display: none }
+    #requirements li { display: grid; gap: 2px; border-left: 2px solid #3b5064; padding-left: 10px }
+    #requirements span { color: #b8c8dc }
+    #requirements [data-unmet] { border-color: #efa96d }
+    #startup-log { margin: 16px 0; color: #b8c8dc }
+    #startup-log pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto }
+    #frame-report { position: fixed; z-index: 1; top: 35%; left: 12px; right: 12px; margin: auto; max-width: 420px; padding: 12px; border: 1px solid #3b5064; border-radius: 12px; background: #17212c; overflow-wrap: anywhere }
+    #frame-report pre { white-space: pre-wrap; max-height: 24vh; overflow: auto }
+    progress { width: 100%; height: 8px; accent-color: #64adfa }
+    a { color: #a7cdff }
+  </style>
+  <link rel="preload" href="index.js" as="script">
+</head>
+<body>
+  <canvas id="canvas" tabindex="0" aria-label="Interactive HDDAGI scene"></canvas>
+  <details id="frame-report" hidden>
+    <summary>3D frame diagnostics</summary>
+    <pre></pre>
+  </details>
+  <div id="status">
+    <article>
+      <h1>HDDAGI Screen Probes</h1>
+      <p id="message" role="status">Checking WebGPU…</p>
+      <progress id="progress" max="1" aria-label="Download progress"></progress>
+      <ul id="requirements" hidden aria-label="WebGPU device limits"></ul>
+      <details id="startup-log" hidden>
+        <summary>Startup details</summary>
+        <pre></pre>
+      </details>
+      <p><a href="scene-license.txt">Scene credits</a></p>
+    </article>
+  </div>
+  <script src="index.js"></script>
+  <script>
+    const statusPanel = document.querySelector("#status");
+    const message = document.querySelector("#message");
+    const progress = document.querySelector("#progress");
+    const requirements = document.querySelector("#requirements");
+    const startupLog = document.querySelector("#startup-log");
+    const canvas = document.querySelector("#canvas");
+    const frameReport = document.querySelector("#frame-report");
+    const params = new URLSearchParams(location.search);
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const iosProfile = params.get("ios") === "auto" || (ios && params.get("ios") !== "full");
+    const inspectFrames = iosProfile || params.get("ios") === "full";
+    const startupMessages = [];
+    const gpuErrors = new Set();
+    const frameChecks = [];
+    let ready = false;
+    let failed = false;
+    let engine;
+    let device;
+    function wasmHeapBytes() {
+      return engine?.rtenv?.HEAPU8?.byteLength ?? 0;
+    }
+    function heapMessage(bytes, stage) {
+      return `WASM linear memory ${stage} · ${(bytes / 1048576).toFixed(1)} MiB`;
+    }
+    function rememberStartup(text) {
+      if (ready) return;
+      startupMessages.push(String(text).slice(0, 360));
+      if (startupMessages.length > 10) startupMessages.shift();
+    }
+    function fail(error, prefix = "") {
+      if (failed) return;
+      failed = true;
+      statusPanel.hidden = false;
+      progress.hidden = true;
+      message.textContent = prefix + (error instanceof Error ? error.message : String(error));
+      if (startupMessages.length && requirements.hidden) {
+        const stack = error?.stack?.split("\n").slice(0, 12) ?? [];
+        const bytes = wasmHeapBytes();
+        const memory = bytes ? [heapMessage(bytes, "at failure")] : [];
+        startupLog.querySelector("pre").textContent = [...startupMessages, ...memory, ...stack].join("\n");
+        startupLog.hidden = false;
+      }
+    }
+    function checkDevice(device) {
+      const minimumSampledTextures = 44;
+      const sampledTextures = device.limits.maxSampledTexturesPerShaderStage;
+      const workgroupInvocations = device.limits.maxComputeInvocationsPerWorkgroup;
+      const textureTier2 = device.features.has("texture-formats-tier2");
+      const checks = [
+        ["Sampled textures per shader stage", `${sampledTextures} available · ${minimumSampledTextures} required`, sampledTextures >= minimumSampledTextures],
+        ["Compute invocations per workgroup", `${workgroupInvocations} available · 512 required`, workgroupInvocations >= 512],
+        ["Texture formats Tier 2", textureTier2 ? "Available" : "Required · unavailable on this device", textureTier2],
+      ];
+      if (checks.every(([, , supported]) => supported)) return;
+      for (const [label, detail, supported] of checks) {
+        const row = document.createElement("li");
+        const name = document.createElement("strong");
+        const value = document.createElement("span");
+        row.toggleAttribute("data-unmet", !supported);
+        name.textContent = label;
+        value.textContent = detail;
+        row.append(name, value);
+        requirements.append(row);
+      }
+      requirements.hidden = false;
+      device.destroy();
+      throw new Error("This device does not meet the current Forward+ requirements.");
+    }
+    function resizeIOSCanvas() {
+      const size = canvas.getBoundingClientRect();
+      const scale = Math.min(window.devicePixelRatio || 1, 1.25);
+      const width = Math.max(1, Math.round(size.width * scale));
+      const height = Math.max(1, Math.round(size.height * scale));
+      if (canvas.width !== width) canvas.width = width;
+      if (canvas.height !== height) canvas.height = height;
+    }
+    function updateFrameReport() {
+      const pixelSize = `${canvas.width} × ${canvas.height}`;
+      const limits = device.limits;
+      const storageLimits = (name) => [
+        limits[`maxStorage${name}InVertexStage`] ?? limits[`maxStorage${name}PerShaderStage`],
+        limits[`maxStorage${name}InFragmentStage`] ?? limits[`maxStorage${name}PerShaderStage`],
+        limits[`maxStorage${name}PerShaderStage`],
+      ].join(" / ");
+      frameReport.querySelector("pre").textContent = [
+        navigator.userAgent,
+        `iOS profile: ${iosProfile ? "on" : "off"} · Canvas: ${pixelSize} · DPR: ${window.devicePixelRatio}`,
+        `Sampled textures: ${limits.maxSampledTexturesPerShaderStage}`,
+        `Storage limits (vertex / fragment / compute) · Buffers: ${storageLimits("Buffers")} · Textures: ${storageLimits("Textures")}`,
+        ...frameChecks, ...gpuErrors,
+      ].join("\n");
+    }
+    function installFrameReadback() {
+      const context = canvas.getContext("webgpu");
+      if (!context) throw new Error("Cannot create the WebGPU canvas context.");
+      const { configure, getCurrentTexture } = context;
+      const { submit } = device.queue;
+      const { createView } = GPUTexture.prototype;
+      const { beginRenderPass, finish } = GPUCommandEncoder.prototype;
+      const queueSubmit = commands => submit.call(device.queue, commands);
+      const canvasTextures = new WeakSet();
+      const canvasViews = new WeakMap();
+      const canvasEncoders = new WeakMap();
+      const canvasCommands = new WeakMap();
+      let capture;
+      context.configure = desc => configure.call(context, {
+        ...desc, usage: (desc.usage ?? GPUTextureUsage.RENDER_ATTACHMENT) | GPUTextureUsage.COPY_SRC,
+      });
+      context.getCurrentTexture = () => {
+        const texture = getCurrentTexture.call(context);
+        if (capture) canvasTextures.add(texture);
+        return texture;
+      };
+      GPUTexture.prototype.createView = function (desc) {
+        const view = createView.call(this, desc);
+        if (capture && canvasTextures.has(this)) canvasViews.set(view, this);
+        return view;
+      };
+      GPUCommandEncoder.prototype.beginRenderPass = function (desc) {
+        if (capture) {
+          for (const attachment of desc.colorAttachments) {
+            const texture = canvasViews.get(attachment?.view);
+            if (texture) canvasEncoders.set(this, texture);
+          }
+        }
+        return beginRenderPass.call(this, desc);
+      };
+      GPUCommandEncoder.prototype.finish = function (desc) {
+        const command = finish.call(this, desc);
+        const texture = capture && canvasEncoders.get(this);
+        if (texture) canvasCommands.set(command, texture);
+        return command;
+      };
+      device.queue.submit = commands => {
+        queueSubmit(commands);
+        if (!capture) return;
+        const texture = commands.map(command => canvasCommands.get(command)).findLast(Boolean);
+        if (!texture) return;
+        const { resolve, reject } = capture;
+        capture = undefined;
+        readSceneSamples(texture, queueSubmit).then(resolve, reject);
+      };
+      return {
+        capture: () => new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            capture = undefined;
+            reject(new Error("Timed out reading the WebGPU canvas frame."));
+          }, 10000);
+          capture = {
+            resolve(samples) {
+              clearTimeout(timer);
+              resolve(samples);
+            },
+            reject(error) {
+              clearTimeout(timer);
+              reject(error);
+            },
+          };
+        }),
+        stop() {
+          context.configure = configure;
+          context.getCurrentTexture = getCurrentTexture;
+          device.queue.submit = submit;
+          GPUTexture.prototype.createView = createView;
+          GPUCommandEncoder.prototype.beginRenderPass = beginRenderPass;
+          GPUCommandEncoder.prototype.finish = finish;
+        },
+      };
+    }
+    async function readSceneSamples(texture, submit) {
+      const width = texture.width;
+      const height = texture.height;
+      const xs = [0.22, 0.36, 0.50, 0.64, 0.78];
+      const ys = [0.28, 0.38, 0.48, 0.58, 0.68];
+      const buffer = device.createBuffer({
+        label: "3D frame samples", size: xs.length * ys.length * 4,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      try {
+        const encoder = device.createCommandEncoder();
+        let offset = 0;
+        for (const y of ys) {
+          for (const x of xs) {
+            encoder.copyTextureToBuffer(
+              { texture, origin: [Math.floor(x * width), Math.floor(y * height)] },
+              { buffer, offset }, [1, 1]);
+            offset += 4;
+          }
+        }
+        submit([encoder.finish()]);
+        await buffer.mapAsync(GPUMapMode.READ);
+        const bytes = new Uint8Array(buffer.getMappedRange());
+        let lit = 0;
+        let peak = 0;
+        for (let i = 0; i < bytes.length; i += 4) {
+          const pixel = Math.max(bytes[i], bytes[i + 1], bytes[i + 2]);
+          if (pixel > 12) ++lit;
+          peak = Math.max(peak, pixel);
+        }
+        return { width, height, format: texture.format, lit, peak, total: bytes.length / 4 };
+      } finally {
+        buffer.destroy();
+      }
+    }
+    async function checkSceneFrames() {
+      let basic = false;
+      try {
+        while (true) {
+          for (let attempt = 0; attempt < 2; ++attempt) {
+            const p = await frameReadback.capture();
+            const mode = basic ? "Basic post-processing" : "Source post-processing";
+            frameChecks.push(`${mode} · ${p.width} × ${p.height} ${p.format} · ${p.lit}/${p.total} lit · peak ${p.peak}/255`);
+            if (p.lit >= 3) return;
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+          if (basic || !iosProfile || typeof window.hddagiUseBasicPost !== "function") break;
+          window.hddagiUseBasicPost();
+          basic = true;
+        }
+      } catch (error) {
+        frameChecks.push(error.message);
+      } finally {
+        frameReadback.stop();
+      }
+      updateFrameReport();
+      frameReport.hidden = false;
+    }
+    let frameReadback;
+    window.hddagiReady = () => {
+      if (failed || ready) return;
+      performance.mark("hddagi-first-submit");
+      device.queue.onSubmittedWorkDone().then(() => {
+        if (failed) return;
+        ready = true;
+        performance.mark("hddagi-first-frame", { detail: { wasmHeapBytes: wasmHeapBytes() } });
+        statusPanel.hidden = true;
+        if (frameReadback) checkSceneFrames();
+      }).catch(error => fail(error, "WebGPU first frame failed. "));
+    };
+    (async () => {
+      if (!window.isSecureContext) throw new Error("Open the demo over trusted HTTPS or localhost to use WebGPU.");
+      if (!navigator.gpu) throw new Error("This browser does not expose WebGPU.");
+      if (typeof Engine !== "function") throw new Error("The WebGPU engine build is missing.");
+      device = await Engine.requestWebGPUDevice();
+      checkDevice(device);
+      rememberStartup(`WebGPU device ready · ${device.limits.maxSampledTexturesPerShaderStage} sampled textures`);
+      device.lost.then(info => fail(new Error("WebGPU device lost: " + info.message)));
+      device.addEventListener("uncapturederror", event => {
+        const detail = `${event.error.constructor.name}: ${event.error.message}`.slice(0, 480);
+        rememberStartup(detail);
+        if (gpuErrors.size < 6) gpuErrors.add(detail);
+        if (!frameReport.hidden) updateFrameReport();
+      });
+      if (inspectFrames) frameReadback = installFrameReadback();
+      const args = params.has("trace") ? ["--verbose"] : [];
+      if (iosProfile) {
+        resizeIOSCanvas();
+        new ResizeObserver(resizeIOSCanvas).observe(canvas);
+        args.push("--", "--ios-webgpu");
+        rememberStartup("iOS WebGPU profile enabled");
+      }
+      message.textContent = "Downloading engine and scene…";
+      engine = new Engine({
+        executable: "index",
+        canvas,
+        canvasResizePolicy: iosProfile ? 0 : 2,
+        args,
+        renderingDriver: "webgpu",
+        preinitializedWebGPUDevice: device,
+        fileSizes: {"index.audio.position.worklet.js": 2968, "index.audio.worklet.js": 7298, "index.js": 255832, "index.pck": 3696584, "index.wasm": 26116617},
+        onPrint(...args) {
+          const line = args.join(" ");
+          rememberStartup(line);
+          if (!ready && line.startsWith("Build configuration:")) {
+            const bytes = wasmHeapBytes();
+            if (bytes) {
+              rememberStartup(heapMessage(bytes, "before loading the scene"));
+              performance.mark("hddagi-before-scene", { detail: { wasmHeapBytes: bytes } });
+            }
+          }
+          console.log(...args);
+        },
+        onPrintError(...args) {
+          rememberStartup(args.join(" "));
+          console.error(...args);
+        },
+        onProgress(current, total) {
+          if (ready || failed) return;
+          if (total && current < total) {
+            progress.value = current / total;
+            message.textContent = "Downloading " + Math.round(100 * current / total) + "%";
+          } else if (current > 0 && total && current >= total) {
+            progress.removeAttribute("value");
+            message.textContent = "Preparing lighting and shaders…";
+          }
+        },
+      });
+      await engine.startGame();
+      rememberStartup("WebAssembly main returned");
+      if (!ready && !failed) message.textContent = "Preparing the first frame…";
+    })().catch(error => fail(error, "WebGPU startup failed. "));
+  </script>
+</body>
+</html>
